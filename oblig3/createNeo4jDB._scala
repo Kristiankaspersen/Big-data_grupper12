@@ -1,0 +1,125 @@
+
+import org.neo4j.driver._
+
+object Neo4jCreateDB extends App {
+
+    // Drop database
+    val dropDB = "MATCH (n) DETACH DELETE n"
+
+    // 1. Lager nodene Driver, Lap og Constructor. 
+    // Relasjon Driver -> Lap, Lap -> Race, Driver -> Constructor 
+    // Relationships:(DRIVES_FOR, ON_LAP)
+    val makeDriverLapAndConstructor = """LOAD CSV WITH HEADERS FROM 'file:///f1_monaco_2021_and_2022.csv' AS line FIELDTERMINATOR ';'
+MERGE(driver: Driver {name: line.Driver})
+CREATE(lap: Lap {lapId: toInteger(line.lapId), driverId: toInteger(line.DriverId), raceId: toInteger(line.raceId), LapNumber: toInteger(line.LapNumber), AirTemp: toFloat(line.AirTemp),
+Humidity: toFloat(line.Humidity), Rainfall: toBoolean(line.Rainfall),	TrackTemp: toFloat(line.TrackTemp),
+WindDirection: toInteger(line.WindDirection), WindSpeed: toFloat(line.WindSpeed)})
+MERGE(constructor: Constructor {constructor_name: line.Team})
+MERGE(driver) -[:DRIVES_FOR]-> (constructor)
+CREATE(driver) -[:ON_LAP {Compound: line.Compound, TyreLife: toInteger(line.TyreLife)}]-> (lap)"""
+
+    // 2. Hente mer info om Driver (lager bare mer properites for driver)
+    val getMoreInfoFromDriver = """LOAD CSV WITH HEADERS FROM 'file:///f1_drivers_21_22.csv' AS line FIELDTERMINATOR ';'
+MATCH (driver {name: line.code})
+SET driver += {driverId: toInteger(line.driverId), forename: line.forename, surname: line.surname, nationality: line.nationality, born: line.born}"""
+
+    // 3.  Hente mer info om Constructor (Lager bare mer properties for constructor)
+    val getMoreInfoFromConstructor = """LOAD CSV WITH HEADERS FROM 'file:///f1_constructors_21_22.csv' AS line FIELDTERMINATOR ';'
+MATCH (constructor: Constructor {constructor_name: line.name})
+SET constructor += {constructorId: toInteger(line.constructorId), constructorRef: line.constructorRef, nationality: line.nationality}"""
+
+
+    // 4. lager noden race med tilhørende properties 
+    val race = """LOAD CSV WITH HEADERS FROM 'file:///f1_races_21_22.csv' AS line FIELDTERMINATOR ';'
+CREATE (:Race {raceId: toInteger(line.raceId), year: line.year, round: line.round,
+  circuitId: line.circuitId, name: line.name, date: line.date, time: line.time,
+  url: line.url, quali_date: line.quali_date, quali_time: line.quali_time,
+  sprint_time: line.sprint_time})"""
+
+    // 5. Lage relasjon Driver -> Race 
+    // Relationship: (RACED_AT)
+    // denne blir ikke laget ordentlig når jeg lager den med scriptet
+    // informasjonen kommer ikke med
+    val result = """LOAD CSV WITH HEADERS FROM 'file:///f1_results_21_22.csv' AS line FIELDTERMINATOR ';'
+MATCH (d:Driver { driverId: toInteger(line.driverId) }) , (r:Race { raceId: toInteger(line.raceId) })
+MERGE (d)-[:RACED_AT {position: line.position, total_time: line.milliseconds, points: toInteger(line.points), fastestLap: line.fastestLap, rank: toInteger(line.rank), fastestLapTime: line.fastestLapTime}]->(r)"""
+
+
+    // 6. Lage relasjon Lap -> Race
+    // Relationship: (LAP_IN)
+    val relationLapAndRace = """LOAD CSV WITH HEADERS FROM 'file:///f1_monaco_2021_and_2022.csv' AS line FIELDTERMINATOR ';'
+MATCH (r:Race { raceId: toInteger(line.raceId) }), (l:Lap { lapId: toInteger(line.lapId) })
+merge (l)-[:LAP_IN {trackStatus: toInteger(line.TrackStatus)}]->(r)"""
+
+    // 7. Lage noden Qualify med tilhørende properties
+    val qualify = """LOAD CSV WITH HEADERS FROM 'file:///f1_qualify_21_22.csv' AS line FIELDTERMINATOR ';'
+    CREATE (q:Qualifying {qualifyId: toInteger(line.qualifyId),	raceId: toInteger(line.raceId),	driverId: toInteger(line.driverId),	constructorId: toInteger(line.constructorId),	number:line.number,	position: toInteger(line.position),	q1:line.q1,	q2:line.q2,	q3:line.q3})"""
+
+    // //Lage relasjon Driver -> Qualifying
+    // //Relationship: (PARTICIPATED_AT)
+    // //Denne blir ikke laget av en eller annen grunn. (fordi id ikke var int)
+    //    val driverQualifying = """LOAD CSV WITH HEADERS FROM 'file:///f1_qualify_21_22.csv' AS line FIELDTERMINATOR ';'
+    // MATCH (d:Driver { driverId: line.driverId }), (q:Qualifying { qualifyId: line.qualifyId })
+    // MERGE (d)-[:PARTICIPATED_AT]->(q)"""
+
+    // 8. Lage relasjon Driver -> Qualifying
+    // Relationship: (PARTICIPATED_AT)
+    // Blir lagret nå, men får problemer med den ene spørringen
+    val driverQualifying = """LOAD CSV WITH HEADERS FROM 'file:///f1_qualify_21_22.csv' AS line FIELDTERMINATOR ';'
+MATCH (d:Driver { driverId: toInteger(line.driverId) }), (q:Qualifying { qualifyId: toInteger(line.qualifyId) })
+MERGE (d)-[:PARTICIPATED_AT]->(q)"""
+
+    // 9. Lage relasjon Qualifying -> Race
+    // De 2 første spørringene fungerte og ga ikke null, når jeg la til alt ned til her. Men da gir tyre null.
+    val qualifyingRace = """LOAD CSV WITH HEADERS FROM 'file:///f1_qualify_21_22.csv' AS line FIELDTERMINATOR ';'
+MATCH (q:Qualifying { qualifyId: toInteger(line.qualifyId) }), (r:Race { raceId: toInteger(line.raceId) })
+MERGE (q)-[:QUALIFIED_FOR]->(r)"""
+
+    // 10 Legge til kvalifiseringsposisjon Driver -> Race
+    // fungerer fortsatt når jeg la til denne, da fungerer også pole position, men gir name null.Gir fortsatt betLapTime null
+    val addQualifyingPositions = """LOAD CSV WITH HEADERS FROM 'file:///f1_qualify_21_22.csv' AS line FIELDTERMINATOR ';'
+MATCH (d:Driver { driverId: toInteger(line.driverId) }), (ra:Race { raceId: toInteger(line.raceId) })
+MERGE (d)-[r:RACED_AT]-(ra)
+SET r.qualifying_position = toInteger(line.position)"""
+
+
+    // 11 Legge til lap tider i lap noder
+    // Når jeg la til denne så sluttet tyre bestLapTIme og bli null
+    val lapTime = """LOAD CSV WITH HEADERS FROM 'file:///f1_lap_times_21_22.csv' AS line FIELDTERMINATOR ';'
+MATCH (lap: Lap {driverId: toInteger(line.driverId), raceId: toInteger(line.raceId), LapNumber: toInteger(line.lap) })
+SET lap += {position: toInteger(line.position), time: line.time, milliseconds: toInteger(line.milliseconds)}"""
+
+    // 12. Lage relasjon Constructor -> Race
+    // Relationship: (TEAM_PARTICIPATED_AT)
+    val constructorRelationWithRace = """LOAD CSV WITH HEADERS FROM 'file:///f1_constructors_results_21_22.csv' AS line FIELDTERMINATOR ';'
+MATCH (c: Constructor { constructorId: toInteger(line.constructorId) }), (r: Race { raceId: toInteger(line.raceId) })
+merge (c)-[:TEAM_PARTICIPATED_AT {team_points: toInteger(line.points)}]->(r)"""
+
+
+// Når jeg manuelt setter inn, da fungerer query7 og man får ikke nullverdier på de 2 første queryene 
+// Når jeg kjører scriptet får jeg nullverdier på de 2 første queryene og query 7 fungerer ikke 
+
+    // Query to Neo4JDB (todo: endre til riktig localhost(ta inn som parameter, og authTokens))
+    def DBQuery(script: String): Int = {  
+        val driver = GraphDatabase.driver("bolt://localhost/7687", AuthTokens.basic("neo4j", "123456789"))  
+        val session = driver.session   
+        val result = session.run(script)  
+        session.close()  
+        driver.close()  
+        result.consume().counters().nodesCreated()  
+    }
+
+    DBQuery(dropDB)
+    println(s"1, ${DBQuery(makeDriverLapAndConstructor)}") 
+    println(s"2 ,${DBQuery(getMoreInfoFromDriver)}") 
+    println(s"3, ${DBQuery(getMoreInfoFromConstructor)}") 
+    println(s"4, ${DBQuery(race)}")
+    println(s"5, ${DBQuery(result)}")
+    println(s"6, ${DBQuery(relationLapAndRace)}")
+    println(DBQuery(qualify))
+    println(DBQuery(driverQualifying))
+    println(DBQuery(qualifyingRace))
+    println(DBQuery(addQualifyingPositions))
+    println(DBQuery(lapTime ))
+    println(DBQuery(constructorRelationWithRace ))
+}
